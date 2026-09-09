@@ -8,12 +8,14 @@ from compare_books import (
     BookRecord,
     clean_title,
     compare_sources,
+    export_db_to_csv,
     export_reports,
     generate_report,
     load_directory_titles,
     load_list_titles,
     main,
     normalize_title,
+    reclean_database,
     strip_all_extensions,
     sync_to_database,
 )
@@ -28,26 +30,54 @@ class TestCompareBooks(unittest.TestCase):
 
     def test_clean_title(self):
         self.assertEqual(
-            clean_title("📂 Project Manifest.pdf"),
-            "Project Manifest",
+            clean_title("📂 Project Manifest_ The Cybernetic Instrument.pdf"),
+            "Project Manifest: The Cybernetic Instrument",
         )
         self.assertEqual(
             clean_title("150survivalsecrets.pdf"),
-            "150survivalsecrets",
+            "150 Survival Secrets",
         )
         self.assertEqual(
             clean_title("- Pay Bill.pdf"),
             "Pay Bill",
         )
+        self.assertEqual(
+            clean_title("15mathconceptseverydatascientistshouldknow (1).pdf"),
+            "15 Math Concepts Every Data Scientist Should Know",
+        )
+        self.assertEqual(
+            clean_title("automatetheboringstuffwithpython3rdedition.pdf"),
+            "Automate the Boring Stuff with Python 3rd Edition",
+        )
+        self.assertEqual(
+            clean_title("aws_certification_paths.pdf"),
+            "AWS Certification Paths",
+        )
+        self.assertEqual(
+            clean_title("all-in-one-electronics-guide.pdf"),
+            "All-in-One Electronics Guide",
+        )
+        self.assertEqual(
+            clean_title("Bayesian Statistics for Beginners - a step-by-step approach.pdf"),
+            "Bayesian Statistics for Beginners - A Step-by-Step Approach",
+        )
+        self.assertEqual(
+            clean_title("[ WebToolTip.com ] How To Clear Your Mind and Organize Your Life (2026)"),
+            "How to Clear Your Mind and Organize Your Life (2026)",
+        )
+        self.assertEqual(
+            clean_title("blackanddeckercompleteguidetowiring_preview.pdf"),
+            "Black & Decker Complete Guide to Wiring",
+        )
+        self.assertEqual(
+            clean_title("adafruit-ccs811-air-quality-sensor.pdf.pdf"),
+            "Adafruit Ccs811 Air Quality Sensor",
+        )
 
     def test_normalize_title(self):
         self.assertEqual(
             normalize_title("15mathconceptseverydatascientistshouldknow (1).pdf"),
-            "15mathconceptseverydatascientistshouldknow",
-        )
-        self.assertEqual(
-            normalize_title("15mathconceptseverydatascientistshouldknow.pdf"),
-            "15mathconceptseverydatascientistshouldknow",
+            normalize_title("15 Math Concepts Every Data Scientist Should Know.pdf"),
         )
         self.assertEqual(
             normalize_title("9781806029570 2.pdf"),
@@ -59,7 +89,7 @@ class TestCompareBooks(unittest.TestCase):
         )
         self.assertEqual(
             normalize_title("[Frank D. Petruzella] Electric Motors and Control Systems.pdf"),
-            normalize_title("Frank D Petruzella Electric Motors and Control Systems.epub"),
+            normalize_title("Electric Motors and Control Systems.epub"),
         )
 
     def test_compare_sources(self):
@@ -215,6 +245,76 @@ class TestCompareBooks(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue((export_dir / "missing_books.txt").exists())
             self.assertTrue((export_dir / "unlisted_books.txt").exists())
+            self.assertTrue(db_file.exists())
+
+    def test_export_db_to_csv(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            db_path = temp_path / "test.db"
+            csv_path = temp_path / "test.csv"
+
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE books (id INTEGER PRIMARY KEY, clean_title TEXT, in_directory INTEGER);")
+                conn.execute("INSERT INTO books (clean_title, in_directory) VALUES ('Sample Book', 1);")
+
+            csv_text = export_db_to_csv(db_path=db_path, output_path=csv_path)
+            self.assertIn("id,clean_title,in_directory", csv_text)
+            self.assertIn("1,Sample Book,1", csv_text)
+            self.assertTrue(csv_path.exists())
+            self.assertEqual(csv_path.read_text(encoding="utf-8").strip(), csv_text.strip())
+
+    def test_reclean_database(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            db_path = temp_path / "test_reclean.db"
+            csv_path = temp_path / "test_reclean.csv"
+
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE books (
+                        id INTEGER PRIMARY KEY,
+                        clean_title TEXT NOT NULL UNIQUE,
+                        raw_title TEXT NOT NULL,
+                        source_path TEXT,
+                        in_directory INTEGER DEFAULT 0
+                    );
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO books (clean_title, raw_title, source_path, in_directory)
+                    VALUES
+                    ('15mathconceptseverydatascientistshouldknow', '15mathconceptseverydatascientistshouldknow.pdf', '/path/1', 1),
+                    ('15mathconceptseverydatascientistshouldknow (1)', '15mathconceptseverydatascientistshouldknow (1).pdf', '/path/2', 1),
+                    ('aws_certification_paths', 'aws_certification_paths.pdf', '/path/3', 0);
+                    """
+                )
+
+            count = reclean_database(db_path=db_path)
+            self.assertEqual(count, 3)
+
+            with sqlite3.connect(db_path) as conn:
+                rows = conn.execute("SELECT clean_title, in_directory FROM books ORDER BY clean_title").fetchall()
+                self.assertEqual(
+                    rows,
+                    [
+                        ("15 Math Concepts Every Data Scientist Should Know", 1),
+                        ("AWS Certification Paths", 0),
+                    ],
+                )
+
+            csv_text = export_db_to_csv(db_path=db_path, output_path=csv_path)
+            self.assertIn("15 Math Concepts Every Data Scientist Should Know", csv_text)
+            self.assertIn("AWS Certification Paths", csv_text)
+            self.assertTrue(csv_path.exists())
+
+    def test_init_db_cli(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            db_file = temp_path / "cli_init.db"
+            exit_code = main(["--init-db", "--db-path", str(db_file)])
+            self.assertEqual(exit_code, 0)
             self.assertTrue(db_file.exists())
 
 
